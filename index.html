@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>实验室温度监测</title>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --line: #d9dee7;
+      --accent: #177ddc;
+      --accent-soft: #e8f3ff;
+      --ok: #0f8f61;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .shell { max-width: 1180px; margin: 0 auto; padding: 28px 20px 36px; }
+    header { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
+    h1 { margin: 0; font-size: 28px; line-height: 1.2; letter-spacing: 0; }
+    .sub { margin-top: 8px; color: var(--muted); font-size: 14px; }
+    .status { text-align: right; color: var(--muted); font-size: 13px; }
+    .status strong { display: block; color: var(--ok); font-size: 14px; margin-bottom: 4px; }
+    .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 18px 0; }
+    .tabs { display: inline-flex; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+    .tab { border: 0; border-radius: 6px; background: transparent; padding: 8px 14px; font-size: 14px; cursor: pointer; color: var(--muted); }
+    .tab.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+    .refresh { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); padding: 8px 12px; cursor: pointer; }
+    .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+    .label { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+    .value { font-size: 24px; font-weight: 700; line-height: 1; }
+    .value small { font-size: 14px; color: var(--muted); margin-left: 4px; }
+    .chart-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+    #chart { width: 100%; height: 540px; }
+    .empty { padding: 80px 20px; text-align: center; color: var(--muted); }
+    footer { color: var(--muted); font-size: 12px; margin-top: 14px; }
+    @media (max-width: 760px) {
+      header { display: block; }
+      .status { text-align: left; margin-top: 12px; }
+      .toolbar { align-items: stretch; flex-direction: column; }
+      .tabs { width: 100%; }
+      .tab { flex: 1; }
+      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      #chart { height: 430px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <h1>实验室温度监测</h1>
+        <div class="sub">自动采集冷云平台数据，展示当天温度变化曲线。</div>
+      </div>
+      <div class="status"><strong id="health">等待数据</strong><span id="updated">最后更新：--</span></div>
+    </header>
+
+    <section class="toolbar">
+      <div class="tabs" id="deviceTabs"></div>
+      <button class="refresh" id="refreshButton">刷新数据</button>
+    </section>
+
+    <section class="stats">
+      <div class="card"><div class="label">最新温度</div><div class="value" id="latest">--</div></div>
+      <div class="card"><div class="label">最高温度</div><div class="value" id="max">--</div></div>
+      <div class="card"><div class="label">最低温度</div><div class="value" id="min">--</div></div>
+      <div class="card"><div class="label">记录数量</div><div class="value" id="count">--</div></div>
+    </section>
+
+    <section class="chart-panel">
+      <div id="chart"></div>
+      <div class="empty" id="empty" hidden>当前设备暂无可显示的温度数据。</div>
+    </section>
+
+    <footer>页面会读取仓库中的 temperature_data.json；采集脚本更新该文件后，刷新页面即可看到最新曲线。</footer>
+  </main>
+
+  <script>
+    const chart = echarts.init(document.getElementById('chart'));
+    const tabs = document.getElementById('deviceTabs');
+    const empty = document.getElementById('empty');
+    let payload = null;
+    let activeDevice = null;
+
+    function fmt(value, unit) {
+      return Number.isFinite(value) ? `${value.toFixed(1)}<small>${unit}</small>` : '--';
+    }
+
+    function setStat(id, html) {
+      document.getElementById(id).innerHTML = html;
+    }
+
+    function renderTabs() {
+      tabs.innerHTML = '';
+      const devices = Object.keys(payload.devices || {});
+      if (!activeDevice || !devices.includes(activeDevice)) activeDevice = devices[0];
+      for (const id of devices) {
+        const button = document.createElement('button');
+        button.className = `tab${id === activeDevice ? ' active' : ''}`;
+        button.textContent = payload.devices[id].name || id;
+        button.onclick = () => { activeDevice = id; render(); };
+        tabs.appendChild(button);
+      }
+    }
+
+    function render() {
+      renderTabs();
+      const device = payload.devices[activeDevice];
+      const records = (device.records || []).slice().sort((a, b) => a.time.localeCompare(b.time));
+      const unit = device.unit || '℃';
+      document.getElementById('updated').textContent = `最后更新：${payload.lastUpdated || '--'} ${payload.timezone || ''}`;
+
+      if (!records.length) {
+        document.getElementById('health').textContent = `${device.name || activeDevice} 暂无数据`;
+        chart.clear();
+        document.getElementById('chart').hidden = true;
+        empty.hidden = false;
+        setStat('latest', '--'); setStat('max', '--'); setStat('min', '--'); setStat('count', '0');
+        return;
+      }
+
+      document.getElementById('health').textContent = `${device.name || activeDevice} 数据正常`;
+      document.getElementById('chart').hidden = false;
+      empty.hidden = true;
+
+      const values = records.map(r => Number(r.temperature)).filter(Number.isFinite);
+      const latest = records[records.length - 1].temperature;
+      const max = Math.max(...values);
+      const min = Math.min(...values);
+      setStat('latest', fmt(Number(latest), unit));
+      setStat('max', fmt(max, unit));
+      setStat('min', fmt(min, unit));
+      setStat('count', String(records.length));
+
+      chart.setOption({
+        animation: false,
+        grid: { left: 58, right: 28, top: 36, bottom: 70 },
+        tooltip: {
+          trigger: 'axis',
+          formatter: params => {
+            const point = params[0];
+            return `${point.axisValue}<br>${device.name || activeDevice}: ${Number(point.data[1]).toFixed(1)} ${unit}`;
+          }
+        },
+        dataZoom: [
+          { type: 'inside', xAxisIndex: 0 },
+          { type: 'slider', xAxisIndex: 0, height: 28, bottom: 18 }
+        ],
+        xAxis: {
+          type: 'time',
+          axisLabel: { formatter: value => echarts.format.formatTime('hh:mm', value) },
+          splitLine: { show: true, lineStyle: { type: 'dashed', color: '#e1e5ee' } }
+        },
+        yAxis: {
+          type: 'value',
+          name: `温度 (${unit})`,
+          scale: true,
+          splitLine: { lineStyle: { type: 'dashed', color: '#e1e5ee' } }
+        },
+        series: [{
+          name: device.name || activeDevice,
+          type: 'line',
+          smooth: false,
+          symbol: 'circle',
+          symbolSize: 5,
+          lineStyle: { width: 2, color: '#177ddc' },
+          itemStyle: { color: '#177ddc' },
+          data: records.map(r => [r.time.replace(' ', 'T'), Number(r.temperature)])
+        }]
+      });
+    }
+
+    async function loadData() {
+      document.getElementById('health').textContent = '正在读取数据';
+      const response = await fetch(`temperature_data.json?v=${Date.now()}`, { cache: 'no-store' });
+      payload = await response.json();
+      render();
+    }
+
+    document.getElementById('refreshButton').onclick = loadData;
+    window.addEventListener('resize', () => chart.resize());
+    loadData().catch(error => {
+      document.getElementById('health').textContent = '数据读取失败';
+      empty.hidden = false;
+      empty.textContent = error.message;
+    });
+  </script>
+</body>
+</html>
