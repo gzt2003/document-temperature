@@ -9,7 +9,7 @@
   "archive_legacy_on_first_publish": true,
   "temperature_probe_names": ["探头2"],
   "devices": [
-    {"id": "bbq", "cloud_name": "BBQ", "display_name": "BBQ"},
+    {"id": "bbo", "cloud_name": "BBO", "display_name": "BBO"},
     {"id": "ccd", "cloud_name": "CCD", "display_name": "CCD"},
     {"id": "slm", "cloud_name": "SLM", "display_name": "SLM"},
     {"id": "cantilever", "cloud_name": "悬臂梁", "display_name": "悬臂梁"},
@@ -17,5 +17,4 @@
     {"id": "objective", "cloud_name": "物镜", "display_name": "物镜"}
   ]
 }
-
 
