@@ -1,0 +1,21 @@
+{
+  "system_id": "515-optical-path",
+  "system_name": "515光路测温系统",
+  "timezone": "Asia/Shanghai",
+  "history_days": 14,
+  "poll_seconds": 300,
+  "retry_seconds": 60,
+  "login_attempts": 5,
+  "archive_legacy_on_first_publish": true,
+  "temperature_probe_names": ["探头2"],
+  "devices": [
+    {"id": "bbq", "cloud_name": "BBQ", "display_name": "BBQ"},
+    {"id": "ccd", "cloud_name": "CCD", "display_name": "CCD"},
+    {"id": "slm", "cloud_name": "SLM", "display_name": "SLM"},
+    {"id": "cantilever", "cloud_name": "悬臂梁", "display_name": "悬臂梁"},
+    {"id": "stepper-motor", "cloud_name": "步进电机", "display_name": "步进电机"},
+    {"id": "objective", "cloud_name": "物镜", "display_name": "物镜"}
+  ]
+}
+
+
