@@ -415,7 +415,7 @@ class TemperatureCollector:
                     continue
         raise RuntimeError(f"设备列表中未找到 {cloud_name}")
 
-    def discover_api_url(self, device):
+    def capture_api_payloads(self, device):
         self.driver.get(DEVICE_LIST_URL)
         WebDriverWait(self.driver, 15).until(
             lambda current: current.execute_script("return document.readyState") == "complete"
@@ -435,7 +435,7 @@ class TemperatureCollector:
         time.sleep(5)
         self.close_popups()
 
-        urls = []
+        responses = []
         for entry in self.driver.get_log("performance"):
             try:
                 message = json.loads(entry["message"])["message"]
@@ -444,21 +444,53 @@ class TemperatureCollector:
                 params = message.get("params", {})
                 if params.get("type") not in ("XHR", "Fetch"):
                     continue
-                url = params.get("response", {}).get("url", "")
+                response = params.get("response", {})
+                url = response.get("url", "")
+                request_id = params.get("requestId")
             except Exception:
                 continue
-            if "/api/data/" in url and url not in urls:
-                urls.append(url)
+            if "/api/data/" not in url or not request_id:
+                continue
+            if "chartData" in url:
+                priority = 0
+            elif "realtimeData" in url:
+                priority = 1
+            else:
+                continue
+            responses.append((priority, url, request_id))
 
-        chart_urls = [url for url in urls if "chartData" in url]
-        realtime_urls = [url for url in urls if "realtimeData" in url]
-        candidates = chart_urls or realtime_urls
+        candidates = sorted(responses, key=lambda item: item[0])
         if not candidates:
             raise RuntimeError(f"未捕获到 {device['cloud_name']} 的温度数据接口")
-        chosen = candidates[0]
-        self.api_urls[device["id"]] = chosen
-        LOGGER.info("%s 已捕获数据接口 %s", device["display_name"], urlparse(chosen).path)
-        return chosen
+
+        payloads = []
+        body_errors = []
+        for _, url, request_id in candidates:
+            try:
+                body_info = self.driver.execute_cdp_cmd(
+                    "Network.getResponseBody", {"requestId": request_id}
+                )
+                body = body_info.get("body", "")
+                if body_info.get("base64Encoded"):
+                    body = base64.b64decode(body).decode("utf-8")
+                payloads.append({"url": url, "payload": json.loads(body or "{}")})
+            except Exception as exc:
+                body_errors.append(f"{urlparse(url).path}: {exc}")
+
+        if not payloads:
+            details = "; ".join(body_errors[:3])
+            raise RuntimeError(
+                f"已捕获 {device['cloud_name']} 数据接口，但无法读取浏览器响应体：{details}"
+            )
+
+        paths = sorted({urlparse(item["url"]).path for item in payloads})
+        LOGGER.info(
+            "%s 已读取网页原始响应 %s（%s 个）",
+            device["display_name"],
+            ", ".join(paths),
+            len(payloads),
+        )
+        return payloads
 
     def fetch_json(self, url):
         result = self.driver.execute_async_script(
@@ -511,12 +543,10 @@ class TemperatureCollector:
             cursor = end + timedelta(seconds=1)
 
     def collect_device(self, device):
-        url = self.api_urls.get(device["id"]) or self.discover_api_url(device)
+        payloads = self.capture_api_payloads(device)
         all_records = {}
-        last_payload = None
-        for start, end in self.query_windows(device["id"]):
-            payload = self.fetch_json(self.url_with_range(url, start, end))
-            last_payload = payload
+        for captured in payloads:
+            payload = captured["payload"]
             records = extract_temperature_records(
                 payload,
                 self.config.get("temperature_probe_names", ["探头2"]),
@@ -524,17 +554,37 @@ class TemperatureCollector:
             )
             for record in records:
                 all_records[record["time"]] = record
-            time.sleep(0.25)
 
-        if last_payload is not None:
-            debug_path = self.data_dir / "debug" / f"{device['id']}_latest.json"
-            debug_path.write_text(
-                json.dumps(last_payload, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+        debug_path = self.data_dir / "debug" / f"{device['id']}_latest.json"
+        debug_path.write_text(
+            json.dumps(
+                {
+                    "responses": [
+                        {
+                            "path": urlparse(captured["url"]).path,
+                            "payload": captured["payload"],
+                        }
+                        for captured in payloads
+                    ]
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         records = [all_records[key] for key in sorted(all_records)]
         if not records:
+            api_messages = []
+            for captured in payloads:
+                payload = captured["payload"]
+                if isinstance(payload, dict):
+                    code = payload.get("code")
+                    message = payload.get("message")
+                    if code is not None or message:
+                        api_messages.append(f"code={code}, message={message}")
+            detail = f"；接口状态：{' | '.join(api_messages)}" if api_messages else ""
             raise RuntimeError(
-                f"{device['display_name']} 接口有响应，但未解析出探头2/摄氏度记录"
+                f"{device['display_name']} 网页接口有响应，但未解析出探头2/摄氏度记录{detail}"
             )
         changed = self.store.upsert(device["id"], records)
         LOGGER.info(
