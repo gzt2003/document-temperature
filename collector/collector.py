@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 import ddddocr
 import requests
+from PIL import Image
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.chrome.options import Options
@@ -36,6 +37,12 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 LOGGER = logging.getLogger("temperature-collector")
+
+
+# ddddocr 1.0.6 still references Pillow's removed Image.ANTIALIAS alias.
+# Keep current Pillow versions and restore the alias to its equivalent filter.
+if not hasattr(Image, "ANTIALIAS"):
+    Image.ANTIALIAS = Image.Resampling.LANCZOS
 
 
 def first_env(*names, default=None, required=False):
